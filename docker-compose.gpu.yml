@@ -6,5 +6,7 @@ services:
     depends_on:
       vllm:
         condition: service_started
+    links:
+      - vllm
   vllm:
     profiles: []

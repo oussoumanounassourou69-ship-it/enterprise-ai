@@ -28,15 +28,15 @@ A self-hosted enterprise AI platform designed for an employee assistant with tex
 ## Quick start
 
 1. Copy `.env.example` to `.env`.
-2. For CPU-only local inference, set `LLM_MODE=ollama` and use the `qwen3:1.7b` model.
-3. For local GPU inference, set `LLM_MODE=vllm`, install NVIDIA Container Toolkit, and start with the GPU compose file.
-4. Start:
+2. CPU mode uses Ollama with `qwen3:0.6b` by default. Start and download the model:
 
 ```bash
-docker compose --env-file .env -f docker-compose.yml up -d --build
+make up
 ```
 
-For GPU:
+Set `OLLAMA_MODEL` in `.env` to use a different Ollama model; `make up OLLAMA_MODEL=<model>` pulls that model.
+
+For GPU inference, install NVIDIA Container Toolkit and start vLLM:
 
 ```bash
 docker compose --env-file .env --profile gpu -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
@@ -54,6 +54,8 @@ docker compose --env-file .env exec ollama ollama pull qwen3:1.7b
 7. Qdrant dashboard: `http://localhost:6333/dashboard`.
 8. MinIO: `http://localhost:9001`.
 9. Keycloak: `http://localhost:8080`.
+
+In GitHub Codespaces, run `make configure-codespaces-oidc` once after the first startup. It registers the exact forwarded frontend URL with Keycloak; Keycloak does not accept a wildcard for the forwarded hostname.
 
 ## First document
 
@@ -105,7 +107,11 @@ Identity -> Keycloak (production)
 
 ## Security notes
 
-This repository deliberately defaults to `AUTH_MODE=dev` for local development. Production deployments must use Keycloak/OIDC, TLS, private network exposure for databases, secret management, backups, and explicit tool permissions. Do not expose vLLM, PostgreSQL, Redis, Qdrant or MinIO directly to the public internet.
+The API defaults to `AUTH_MODE=oidc`; the example environment also uses Keycloak/OIDC. Set unique values for every password in `.env` before deployment. Compose publishes service ports on localhost only, and the API validates the Keycloak token audience. Use TLS and private networking for shared deployments; do not expose databases, Qdrant, MinIO or inference services to the public internet. `AUTH_MODE=dev` is an explicit local-only bypass.
+
+Compose uses Docker's default bridge with explicit links to support nested Docker environments where user-defined bridge routing is unavailable. The default bridge is shared with other containers on the same Docker daemon and is not a production isolation boundary; use a dedicated user-defined network for production.
+
+Uploaded chunks are stored in Qdrant rather than duplicated in PostgreSQL. On API startup, existing chunk text is cleared and the PostgreSQL column is made nullable; PostgreSQL can reuse the released space after vacuuming.
 
 ## Roadmap
 

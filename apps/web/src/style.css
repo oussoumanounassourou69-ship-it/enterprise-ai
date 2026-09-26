@@ -545,6 +545,85 @@ button {
   border-bottom-left-radius: 5px;
 }
 
+.answer-text {
+  display: inline;
+}
+
+.answer-table-scroll {
+  max-width: 100%;
+  margin: 12px 0 4px;
+  overflow-x: auto;
+  border: 1px solid #e5e9ef;
+  border-radius: 7px;
+  background: #ffffff;
+  scrollbar-color: #c6cdd8 transparent;
+  scrollbar-width: thin;
+}
+
+.answer-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  color: #344054;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.answer-table th,
+.answer-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.answer-table thead th {
+  color: #667085;
+  background: #f5f7fa;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.answer-table thead th:first-child,
+.answer-table tbody th {
+  text-align: left;
+}
+
+.answer-table tbody th {
+  color: #1f2937;
+  font-weight: 650;
+}
+
+.answer-table td {
+  text-align: right;
+}
+
+.answer-table td.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-table tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
+.answer-table tbody tr:last-child th,
+.answer-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .message-avatar {
   display: flex;
   align-items: center;

@@ -3,8 +3,7 @@
   "enabled": true,
   "registrationAllowed": false,
   "clients": [
-    {"clientId":"enterprise-web","enabled":true,"publicClient":true,"redirectUris":["http://localhost:5173/*"],"webOrigins":["http://localhost:5173"]},
-    {"clientId":"enterprise-ai","enabled":true,"publicClient":false,"secret":"change-me","standardFlowEnabled":true}
+    {"clientId":"enterprise-web","enabled":true,"publicClient":true,"redirectUris":["http://localhost:5173/*"],"webOrigins":["http://localhost:5173","+"],"protocolMappers":[{"name":"enterprise-api-audience","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper","config":{"included.custom.audience":"enterprise-api","id.token.claim":"false","access.token.claim":"true"}}]}
   ],
   "roles": {"realm":[{"name":"employee"},{"name":"manager"},{"name":"admin"}]}
 }

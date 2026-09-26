@@ -1,0 +1,20 @@
+services:
+  api:
+    volumes:
+      - ./services/api/app:/app/app:ro
+    environment:
+      LLM_MODE: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    links:
+      - ollama
+  ollama:
+    profiles: []
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s

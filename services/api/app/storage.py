@@ -13,3 +13,5 @@ class ObjectStorage:
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
     def get(self,key):
         return self.client.get_object(Bucket=self.bucket,Key=key)['Body'].read()
+    def delete(self,key):
+        self.client.delete_object(Bucket=self.bucket,Key=key)

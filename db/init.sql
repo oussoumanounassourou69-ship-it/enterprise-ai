@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   role VARCHAR(30) NOT NULL,
-  content TEXT NOT NULL,
+  content TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -69,4 +69,5 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_owner_created ON documents ((metadata->>'owner'), created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);

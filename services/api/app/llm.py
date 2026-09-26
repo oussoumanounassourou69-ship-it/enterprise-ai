@@ -60,7 +60,7 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> st
         "options":{"temperature":0,"num_predict":16,"num_ctx":512,"num_thread":4},
     }
     try:
-        async with httpx.AsyncClient(timeout=settings.intent_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=min(settings.intent_timeout_seconds, 8.0)) as client:
             response=await client.post(f"{settings.ollama_base_url.rstrip('/')}/api/chat",json=payload)
             response.raise_for_status()
             content=response.json().get("message",{}).get("content","")

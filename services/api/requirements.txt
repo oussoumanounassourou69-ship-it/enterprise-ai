@@ -9,6 +9,8 @@ python-multipart==0.0.20
 qdrant-client==1.14.3
 sentence-transformers==5.0.0
 pypdf==5.7.0
+PyMuPDF==1.26.4
+rapidocr_onnxruntime==1.4.4
 python-docx==1.2.0
 boto3==1.39.1
 redis==6.2.0

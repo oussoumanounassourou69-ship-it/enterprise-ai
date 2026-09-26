@@ -17,6 +17,7 @@ class RAGService:
         try: self.client.get_collection(self.s.qdrant_collection)
         except Exception:
             self.client.create_collection(self.s.qdrant_collection, vectors_config=models.VectorParams(size=self.dim, distance=models.Distance.COSINE))
+        self.client.create_payload_index(collection_name=self.s.qdrant_collection, field_name='owner', field_schema=models.PayloadSchemaType.KEYWORD, wait=True)
 
     def embed(self, texts):
         return self.embedder.encode(texts, normalize_embeddings=True).tolist()
@@ -35,9 +36,11 @@ class RAGService:
         selector=models.FilterSelector(filter=models.Filter(must=[models.FieldCondition(key='document_id',match=models.MatchValue(value=document_id))]))
         self.client.delete(collection_name=self.s.qdrant_collection, points_selector=selector, wait=True)
 
-    def search(self, query, limit=6):
+    def search(self, query, owner, limit=6):
         vec=self.embed([f"query: {query}"])[0]
-        result=self.client.query_points(collection_name=self.s.qdrant_collection, query=vec, limit=limit, with_payload=True)
+        owner_filter=models.Filter(must=[models.FieldCondition(key='owner',match=models.MatchValue(value=owner))])
+        candidate_limit=max(limit*8,32)
+        result=self.client.query_points(collection_name=self.s.qdrant_collection, query=vec, query_filter=owner_filter, limit=candidate_limit, with_payload=True)
         semantic_points=result.points
         terms={term for term in re.findall(r"[a-zàâçéèêëîïôûùüÿñæœ0-9]+", query.lower()) if len(term)>3}
         aliases={
@@ -54,15 +57,10 @@ class RAGService:
         terms-= {'donne','donner','moi','pour','avec','dans','cette','quels','quelle'}
         salary_query=any(term in query.lower() for term in ('grille', 'salaire', 'salary', 'salaries', 'wage', 'remuneration'))
         if not terms:
-            return semantic_points
-        lexical_points=[]; offset=None
-        while True:
-            points,offset=self.client.scroll(collection_name=self.s.qdrant_collection, limit=256, offset=offset, with_payload=True)
-            lexical_points.extend(points)
-            if offset is None: break
+            return semantic_points[:limit]
         ranked=[]
         priority=[]
-        for point in lexical_points:
+        for point in semantic_points:
             content=' '.join(str((point.payload or {}).get('content','')).lower().split())
             filename=str((point.payload or {}).get('filename','')).lower()
             matches=sum(1 for term in terms if term in content or term in filename)
@@ -76,7 +74,7 @@ class RAGService:
             'appendix 3' in ' '.join(str((point.payload or {}).get('content','')).lower().split()),
             'salary scale' in ' '.join(str((point.payload or {}).get('content','')).lower().split()),
         ), reverse=True)
-        ordered=priority+[(item[1]) for item in ranked]+semantic_points
+        ordered=priority+[item[1] for item in ranked]+semantic_points
         for point in ordered:
             point_id=str(point.id)
             if point_id not in seen:

@@ -30,33 +30,115 @@ def chunk_text(text: str, size=1000, overlap=150):
 
 def extract_salary_scale_markdown(data: bytes) -> str | None:
     import io
-
-    def numeric_values(text: str) -> list[str]:
-        matches=re.findall(r'(?<!\d)\d{1,3}(?:[ \u00a0]\d{3})+|(?<!\d)\d+(?!\d)', text)
-        return [' '.join(value.split()) for value in matches]
+    import fitz
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
 
     reader=PdfReader(io.BytesIO(data))
-    for page in reader.pages:
-        if 'salary scale' not in (page.extract_text() or '').lower():
+    page_index=None
+    for index,page in enumerate(reader.pages):
+        page_text=re.sub(r'\s+', ' ', page.extract_text() or '').lower()
+        if re.search(r'\bappendix\s+3\b', page_text) and re.search(r'\bsalary\s+scale\b', page_text):
+            page_index=index
+            break
+    if page_index is None:
+        return None
+
+    with fitz.open(stream=data,filetype='pdf') as pdf:
+        pixmap=pdf[page_index].get_pixmap(matrix=fitz.Matrix(3,3),alpha=False)
+        image=np.frombuffer(pixmap.samples,dtype=np.uint8).reshape(pixmap.height,pixmap.width,pixmap.n).copy()
+    detections,_=RapidOCR()(image)
+    return _salary_matrix_from_ocr(detections or [])
+
+
+def _salary_matrix_from_ocr(detections) -> str | None:
+    words=[]
+    for box,text,confidence in detections:
+        if confidence < 0.65:
             continue
-        words=[]
-        page.extract_text(visitor_text=lambda text, cm, tm, font, size: words.append((tm[4],tm[5],text)))
-        rows=[]
-        for x,y,text in words:
-            value=text.strip()
-            if value in {str(number) for number in range(4,13)} and x < 140:
-                rows.append((value,y))
-        if not rows:
+        x=sum(point[0] for point in box)/len(box)
+        y=sum(point[1] for point in box)/len(box)
+        value=re.sub(r'\s+', '', str(text)).strip()
+        words.append((x,y,value))
+
+    category_label=next(((x,y) for x,y,text in words if text.lower()=='categories'),None)
+    if category_label is None:
+        return None
+    category_x,header_y=category_label
+    header_cells=sorted(
+        (x,text.upper()) for x,y,text in words
+        if abs(y-header_y)<=14 and x>category_x+100 and len(text)==1 and text.isalpha()
+    )
+    if len(header_cells)!=7:
+        return None
+    columns=[x for x,_ in header_cells]
+
+    labels=[]
+    for x,y,text in words:
+        if abs(x-category_x)<=85 and y>header_y+15 and re.fullmatch(r'\d{1,2}',text):
+            labels.append((y,int(text)))
+    labels.sort()
+    if len(labels)<3:
+        return None
+
+    expected_labels=list(range(labels[0][1],labels[0][1]+len(labels)))
+    corrected=[]
+    for index,(y,value) in enumerate(labels):
+        expected=expected_labels[index]
+        if value!=expected and value not in [item[1] for item in corrected]:
+            return None
+        corrected.append((y,expected))
+
+    data_words=[]
+    for x,y,text in words:
+        if not re.fullmatch(r'\d{4,8}',text):
             continue
-        output=['| Echelon | Minimum | Médian | Maximum |','| --- | --- | --- | --- |']
-        for echelon,y in rows:
-            cells=[]
-            for x,cell_y,text in words:
-                if x >= 145 and abs(cell_y-y) <= 5 and text.strip():
-                    cells.extend((x,value) for value in numeric_values(text))
-            values=[value for _,value in sorted(cells)]
-            if values:
-                middle=values[(len(values)-1)//2]
-                output.append(f'| {echelon} | {values[0]} | {middle} | {values[-1]} |')
-        return '\n'.join(output) if len(output)>2 else None
-    return None
+        column=min(range(7),key=lambda index:abs(x-columns[index]))
+        if abs(x-columns[column])<=55:
+            data_words.append((y,column,int(text)))
+    data_words.sort()
+
+    bands=[]
+    for y,column,value in data_words:
+        if not bands or y-bands[-1][0]>17:
+            bands.append([y,[]])
+        band_y,values=bands[-1]
+        values.append((column,value))
+        bands[-1][0]=(band_y* (len(values)-1)+y)/len(values)
+
+    output=['| Échelon | A | B | C | D | E | F | G |','| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for index,(row_y,echelon) in enumerate(corrected):
+        available=[(abs(y-row_y),band_index,values) for band_index,(y,values) in enumerate(bands) if abs(y-row_y)<=18]
+        if not available:
+            return None
+        _,base_index,base_band=min(available)
+        next_row_y=corrected[index+1][0] if index+1<len(corrected) else row_y+2*(bands[base_index+1][0]-row_y) if base_index+1<len(bands) else row_y+80
+        increment_band=next((values for y,values in bands[base_index+1:] if y<next_row_y-12),None)
+        if increment_band is None:
+            return None
+
+        base_values=dict(base_band)
+        increment_values=dict(increment_band)
+        step_votes=[]
+        for column,value in increment_values.items():
+            if column>0 and value%column==0:
+                step_votes.append(value//column)
+        for first,(first_value) in base_values.items():
+            for second,second_value in base_values.items():
+                if second>first and (second_value-first_value)%(second-first)==0:
+                    step_votes.append((second_value-first_value)//(second-first))
+        if len(step_votes)<3:
+            return None
+        step_counts={step:step_votes.count(step) for step in set(step_votes)}
+        step=max(step_counts,key=step_counts.get)
+        if step<=0 or step_counts[step]<3:
+            return None
+
+        starts=[value-column*step for column,value in base_values.items()]
+        start_counts={start:starts.count(start) for start in set(starts)}
+        starting_salary=max(start_counts,key=start_counts.get)
+        if start_counts[starting_salary]<4:
+            return None
+        output.append(f"| {echelon} | {' | '.join(str(starting_salary+column*step) for column in range(7))} |")
+
+    return '\n'.join(output) if len(output)>2 else None
