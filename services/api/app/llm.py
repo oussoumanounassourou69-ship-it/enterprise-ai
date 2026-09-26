@@ -28,7 +28,7 @@ class OllamaProvider(LLMProvider):
 
     async def chat(self, messages, temperature=0.2, max_tokens=1200):
         settings=get_settings()
-        payload={"model": self.model, "messages": messages, "stream": False, "think": False, "keep_alive": "10m", "options": {"temperature": temperature, "num_predict": settings.llm_max_tokens, "num_ctx": 2048, "num_thread": 4}}
+        payload={"model": self.model, "messages": messages, "stream": False, "think": False, "keep_alive": "10m", "options": {"temperature": temperature, "num_predict": min(settings.llm_max_tokens, max_tokens, 256), "num_ctx": 2048, "num_thread": 4}}
         async with httpx.AsyncClient(timeout=180) as client:
             r=await client.post(f"{self.base_url}/api/chat", json=payload)
             r.raise_for_status()

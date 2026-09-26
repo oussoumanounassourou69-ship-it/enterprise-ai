@@ -1,5 +1,8 @@
 from pathlib import Path
+from functools import lru_cache
+import logging
 import re
+import time
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
@@ -28,27 +31,40 @@ def chunk_text(text: str, size=1000, overlap=150):
         start=max(0,end-overlap)
     return chunks
 
-def extract_salary_scale_markdown(data: bytes) -> str | None:
-    import io
-    import fitz
-    import numpy as np
+@lru_cache(maxsize=1)
+def _salary_ocr_engine():
     from rapidocr_onnxruntime import RapidOCR
 
-    reader=PdfReader(io.BytesIO(data))
-    page_index=None
-    for index,page in enumerate(reader.pages):
-        page_text=re.sub(r'\s+', ' ', page.extract_text() or '').lower()
-        if re.search(r'\bappendix\s+3\b', page_text) and re.search(r'\bsalary\s+scale\b', page_text):
-            page_index=index
-            break
-    if page_index is None:
-        return None
+    return RapidOCR()
 
+
+def extract_salary_scale_markdown(data: bytes) -> str | None:
+    import fitz
+    import numpy as np
+
+    started=time.perf_counter()
+    page_index=None
     with fitz.open(stream=data,filetype='pdf') as pdf:
+        for index,page in enumerate(pdf):
+            page_text=re.sub(r'\s+', ' ', page.get_text() or '').lower()
+            if re.search(r'\bappendix\s+3\b', page_text) and re.search(r'\bsalary\s+scale\b', page_text):
+                page_index=index
+                break
+        locate_seconds=time.perf_counter()-started
+        if page_index is None:
+            logging.info('salary OCR timing result=appendix_not_found locate_ms=%d total_ms=%d',int(locate_seconds*1000),int((time.perf_counter()-started)*1000))
+            return None
         pixmap=pdf[page_index].get_pixmap(matrix=fitz.Matrix(3,3),alpha=False)
         image=np.frombuffer(pixmap.samples,dtype=np.uint8).reshape(pixmap.height,pixmap.width,pixmap.n).copy()
-    detections,_=RapidOCR()(image)
-    return _salary_matrix_from_ocr(detections or [])
+    render_seconds=time.perf_counter()-started-locate_seconds
+    ocr_started=time.perf_counter()
+    detections,_=_salary_ocr_engine()(image)
+    ocr_seconds=time.perf_counter()-ocr_started
+    parse_started=time.perf_counter()
+    result=_salary_matrix_from_ocr(detections or [])
+    parse_seconds=time.perf_counter()-parse_started
+    logging.info('salary OCR timing locate_ms=%d render_ms=%d ocr_ms=%d parse_ms=%d total_ms=%d',int(locate_seconds*1000),int(render_seconds*1000),int(ocr_seconds*1000),int(parse_seconds*1000),int((time.perf_counter()-started)*1000))
+    return result
 
 
 def _salary_matrix_from_ocr(detections) -> str | None:

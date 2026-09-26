@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:0.6b"
     embedding_model: str = "intfloat/multilingual-e5-small"
-    max_context_chunks: int = 3
+    max_context_chunks: int = 4
     max_history_messages: int = 6
-    llm_max_tokens: int = 512
+    llm_max_tokens: int = 256
     chat_timeout_seconds: float = 45.0
     intent_routing_enabled: bool = True
     intent_timeout_seconds: float = 8.0

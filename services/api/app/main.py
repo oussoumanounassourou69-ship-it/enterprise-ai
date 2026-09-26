@@ -1,4 +1,4 @@
-import asyncio, uuid, json, logging, re
+import asyncio, uuid, json, logging, re, time
 from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +7,7 @@ from .config import get_settings
 from .auth import get_current_user, CurrentUser
 from .models import ChatRequest, ChatResponse, UserResponse, DocumentResponse, TranscriptionResponse, MemoryRequest
 from .db import db_execute, db_fetchall, db_fetchone, migrate_chunk_storage
-from .llm import classify_intent, get_llm
+from .llm import get_llm
 from .rag import RAGService
 from .storage import ObjectStorage
 from .document import extract_salary_scale_markdown, extract_text, chunk_text
@@ -23,12 +23,16 @@ app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credenti
 rag=None; storage=None
 
 def quick_reply(message: str) -> str | None:
-    normalized=re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ0-9 ]", "", message.lower()).strip()
+    normalized=re.sub(r'\s+', ' ', re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ0-9 ]", ' ', message.lower())).strip()
     greetings={"hi","hello","hey","bonjour","salut","bonsoir","good morning","good afternoon","good evening"}
     if normalized in greetings:
         return "Bonjour ! Comment puis-je vous aider ?"
     if normalized in {"merci","thanks","thank you"}:
         return "Avec plaisir !"
+    if normalized in {"comment vas tu","comment allez vous","comment ça va","comment ca va","ca va","ça va","bien et toi","bien et vous"} or normalized.startswith(("ça va bien et toi", "ça va bien et vous", "ca va bien et toi", "ca va bien et vous")):
+        return "Ça va bien, merci de demander. Comment puis-je vous aider ?"
+    if normalized.startswith(("pourquoi prends tu autant de temps", "pourquoi prend tu autant de temps")):
+        return "Désolé pour l’attente. Les recherches documentaires et la génération tournent localement sur CPU; les questions simples sont traitées directement et les réponses sourcées peuvent demander quelques secondes."
     if normalized in {"comment fonctionne cet assistant", "comment fonctionne l assistant", "how does this assistant work", "how does the assistant work"}:
         return "Je réponds à vos questions en m’appuyant sur les documents de référence disponibles. Je retrouve les passages pertinents, puis le modèle local formule une réponse. Si les sources ne suffisent pas, je vous le signale plutôt que d’inventer."
     return None
@@ -42,6 +46,14 @@ def is_document_catalog_request(message: str) -> bool:
 def is_procedure_overview_request(message: str) -> bool:
     normalized=re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ0-9 ]", "", message.lower()).strip()
     return 'procédur' in normalized and any(term in normalized for term in ('principal', 'disponible', 'liste', 'quels', 'quelles'))
+
+def is_source_question(message: str) -> bool:
+    normalized=re.sub(r'\s+', ' ', re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ0-9 ]", ' ', message.lower())).strip()
+    return any(phrase in normalized for phrase in (
+        'sur quels documents', 'sur quelle source', 'quels documents utilises',
+        'quelles sources utilises', 'sur quoi te bases', 'sur quoi vous basez',
+        'tu te bases', 'vous vous basez', 'tes sources', 'vos sources',
+    ))
 
 def procedure_overview_reply(filename: str) -> str | None:
     normalized=filename.lower()
@@ -69,6 +81,10 @@ def is_knowledge_question(message: str) -> bool:
     question_words=('qui', 'que', 'quoi', 'quel', 'quelle', 'quels', 'quelles', 'comment', 'pourquoi', 'où', 'quand', 'combien')
     action_words=('explique', 'décris', 'décrire', 'donne-moi', 'donne moi', 'liste', 'présente')
     return '?' in normalized or normalized.startswith(question_words) or normalized.startswith(action_words)
+
+def is_contextual_follow_up(message: str) -> bool:
+    normalized=re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ0-9 ]", "", message.lower()).strip()
+    return normalized.startswith(("et pour ", "et les ", "et la ", "et le ", "cette ", "ce ", "ces ", "cela ", "ça ", "qu en est il ", "concernant "))
 
 def requests_salary_table(message: str) -> bool:
     normalized=message.lower()
@@ -106,6 +122,9 @@ async def conversation(conversation_id:str,user:CurrentUser=Depends(get_current_
 
 @app.post('/api/v1/chat',response_model=ChatResponse)
 async def chat(req:ChatRequest,user:CurrentUser=Depends(get_current_user)):
+    request_started=time.perf_counter()
+    rag_seconds=0.0
+    llm_seconds=0.0
     u=await ensure_user(user)
     cid=req.conversation_id
     if cid:
@@ -119,41 +138,47 @@ async def chat(req:ChatRequest,user:CurrentUser=Depends(get_current_user)):
     answer=quick_reply(req.message)
     catalog_request=is_document_catalog_request(req.message)
     procedure_overview=is_procedure_overview_request(req.message)
-    intent=None
+    source_question=is_source_question(req.message)
     direct_knowledge=is_knowledge_question(req.message)
+    if answer is None and source_question:
+        rows=await db_fetchall("SELECT id,filename,status FROM documents WHERE metadata->>'owner'=:owner ORDER BY created_at DESC",{'owner':user.external_id})
+        if rows:
+            filenames=', '.join(row['filename'] for row in rows)
+            answer=f"Je me base sur les documents de référence suivants : {filenames}."
+            citations=[{'document_id':str(row['id']),'filename':row['filename'],'chunk_index':0,'score':1.0} for row in rows]
+        else:
+            answer='Aucun document de référence n’est indexé pour votre compte.'
     if answer is None and procedure_overview:
         rows=await db_fetchall("SELECT id,filename,status FROM documents WHERE metadata->>'owner'=:owner ORDER BY created_at DESC",{'owner':user.external_id})
         if rows:
             source=next((row for row in rows if procedure_overview_reply(row['filename'])),None)
             if source:
                 answer=procedure_overview_reply(source['filename'])
-                citations=[{'document_id':source['id'],'filename':source['filename'],'chunk_index':0,'score':1.0}]
+                citations=[{'document_id':str(source['id']),'filename':source['filename'],'chunk_index':0,'score':1.0}]
             else:
                 answer='Documents de référence disponibles :\n\n'+'\n'.join(f"- {row['filename']} ({row['status']})" for row in rows)+'\n\nPrécisez le document ou le sujet pour que je puisse cibler les procédures concernées.'
         else:
             answer='Aucun document de procédure n’est indexé pour le moment.'
-    if answer is None and not direct_knowledge and not catalog_request and req.use_knowledge and s.intent_routing_enabled:
-        intent=await classify_intent(req.message[:180], history)
-        catalog_request=intent == 'document_catalog' and supports_catalog_intent(req.message)
-        if intent == 'document_catalog' and not catalog_request:
-            intent='knowledge_question'
     salary_table=requests_salary_table(req.message)
-    if direct_knowledge and intent is None:
-        intent='knowledge_question'
     if answer is None and catalog_request:
         rows=await db_fetchall("SELECT filename,status FROM documents WHERE metadata->>'owner'=:owner ORDER BY created_at DESC",{'owner':user.external_id})
         if rows:
             answer='Documents sources disponibles :\n\n'+'\n'.join(f"- {row['filename']} ({row['status']})" for row in rows)
         else:
             answer='Aucun document source n’est disponible pour le moment.'
-    search_knowledge=answer is None and req.use_knowledge and (intent == 'knowledge_question' or (intent is None and is_knowledge_question(req.message)))
+    search_knowledge=answer is None and req.use_knowledge and direct_knowledge
     if search_knowledge:
         try:
             retrieval_limit=1 if any(term in req.message.lower() for term in ('grille', 'salaire', 'salary', 'wage')) else s.max_context_chunks
-            previous_topics=' '.join(item['content'] for item in history if item['role'] == 'user')[-1000:]
-            retrieval_query=f'{previous_topics} {req.message}'.strip()
+            retrieval_query=req.message
+            if is_contextual_follow_up(req.message):
+                previous_question=next((item['content'] for item in reversed(history) if item['role']=='user'),None)
+                if previous_question:
+                    retrieval_query=f'{previous_question[:300]} {req.message}'
             retrieval_limit=1 if any(term in retrieval_query.lower() for term in ('grille', 'salaire', 'salary', 'wage')) else retrieval_limit
-            hits=rag.search(retrieval_query,user.external_id,retrieval_limit)
+            rag_started=time.perf_counter()
+            hits=await asyncio.to_thread(rag.search,retrieval_query,user.external_id,retrieval_limit)
+            rag_seconds=time.perf_counter()-rag_started
             for h in hits:
                 p=h.payload or {}; retrieved_chunks.append(p); document_key=p.get('document_id') or p.get('filename','')
                 if document_key not in cited_documents:
@@ -191,8 +216,12 @@ async def chat(req:ChatRequest,user:CurrentUser=Depends(get_current_user)):
     if answer is None:
         messages=[{'role':'system','content':system}]+history+[{'role':'user','content':req.message}]
         try:
+            llm_started=time.perf_counter()
             answer=await asyncio.wait_for(get_llm().chat(messages), timeout=min(s.chat_timeout_seconds, 45.0))
+            llm_seconds=time.perf_counter()-llm_started
         except Exception as e:
+            llm_seconds=time.perf_counter()-llm_started
+            logging.info('chat timing route=llm-failed rag_ms=%d llm_ms=%d total_ms=%d',int(rag_seconds*1000),int(llm_seconds*1000),int((time.perf_counter()-request_started)*1000))
             if isinstance(e, asyncio.TimeoutError) and retrieved_chunks:
                 answer='Je n’ai pas pu produire une réponse fiable dans le délai imparti. Veuillez réessayer.'
             else:
@@ -200,9 +229,11 @@ async def chat(req:ChatRequest,user:CurrentUser=Depends(get_current_user)):
                 raise HTTPException(503, f'Le modèle est indisponible ou n’a pas répondu à temps: {e}')
     mid=str(uuid.uuid4())
     await db_execute('INSERT INTO messages(id,conversation_id,role,content,metadata) VALUES(:id,:c,:r,:x,:m)',{'id':str(uuid.uuid4()),'c':cid,'r':'user','x':req.message,'m':'{}'})
-    await db_execute('INSERT INTO messages(id,conversation_id,role,content,metadata) VALUES(:id,:c,:r,:x,:m)',{'id':mid,'c':cid,'r':'assistant','x':answer,'m':json.dumps({'citations':citations})})
+    await db_execute('INSERT INTO messages(id,conversation_id,role,content,metadata) VALUES(:id,:c,:r,:x,:m)',{'id':mid,'c':cid,'r':'assistant','x':answer,'m':json.dumps({'citations':citations},default=str)})
     await db_execute('UPDATE conversations SET updated_at=now() WHERE id=:c',{'c':cid})
     await db_execute('INSERT INTO audit_logs(user_external_id,action,resource,metadata) VALUES(:u,:a,:r,:m)',{'u':user.external_id,'a':'chat','r':cid,'m':json.dumps({'voice_response':req.voice_response})})
+    route='rag+llm' if rag_seconds and llm_seconds else 'rag' if rag_seconds else 'fast' if answer is not None else 'llm'
+    logging.info('chat timing route=%s rag_ms=%d llm_ms=%d total_ms=%d',route,int(rag_seconds*1000),int(llm_seconds*1000),int((time.perf_counter()-request_started)*1000))
     return ChatResponse(conversation_id=cid,message_id=mid,answer=answer,citations=citations,metadata={'voice_available':s.tts_enabled})
 
 @app.post('/api/v1/documents',response_model=DocumentResponse)

@@ -1,5 +1,9 @@
 import uuid
 import re
+import logging
+import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
@@ -11,6 +15,8 @@ class RAGService:
         self.client=QdrantClient(url=s.qdrant_url)
         self.embedder=SentenceTransformer(s.embedding_model)
         self.dim=self.embedder.get_sentence_embedding_dimension()
+        self._query_embedding_cache=OrderedDict()
+        self._query_embedding_lock=threading.Lock()
         self._ensure_collection()
 
     def _ensure_collection(self):
@@ -21,6 +27,23 @@ class RAGService:
 
     def embed(self, texts):
         return self.embedder.encode(texts, normalize_embeddings=True).tolist()
+
+    def _query_embedding(self, query):
+        normalized_query=' '.join(query.casefold().split())
+        cache=getattr(self,'_query_embedding_cache',None)
+        if cache is None:
+            cache=self._query_embedding_cache=OrderedDict()
+            self._query_embedding_lock=threading.Lock()
+        with self._query_embedding_lock:
+            vector=cache.get(normalized_query)
+            if vector is not None:
+                cache.move_to_end(normalized_query)
+                return list(vector)
+            vector=tuple(self.embed([f"query: {normalized_query}"])[0])
+            cache[normalized_query]=vector
+            if len(cache)>256:
+                cache.popitem(last=False)
+            return list(vector)
 
     def index_chunks(self, document_id, filename, chunks, metadata=None):
         vectors=self.embed([f"passage: {x}" for x in chunks])
@@ -37,10 +60,14 @@ class RAGService:
         self.client.delete(collection_name=self.s.qdrant_collection, points_selector=selector, wait=True)
 
     def search(self, query, owner, limit=6):
-        vec=self.embed([f"query: {query}"])[0]
+        embedding_started=time.perf_counter()
+        vec=self._query_embedding(query)
+        embedding_seconds=time.perf_counter()-embedding_started
         owner_filter=models.Filter(must=[models.FieldCondition(key='owner',match=models.MatchValue(value=owner))])
-        candidate_limit=max(limit*8,32)
+        candidate_limit=max(limit*4,24)
+        qdrant_started=time.perf_counter()
         result=self.client.query_points(collection_name=self.s.qdrant_collection, query=vec, query_filter=owner_filter, limit=candidate_limit, with_payload=True)
+        qdrant_seconds=time.perf_counter()-qdrant_started
         semantic_points=result.points
         terms={term for term in re.findall(r"[a-zàâçéèêëîïôûùüÿñæœ0-9]+", query.lower()) if len(term)>3}
         aliases={
@@ -57,7 +84,10 @@ class RAGService:
         terms-= {'donne','donner','moi','pour','avec','dans','cette','quels','quelle'}
         salary_query=any(term in query.lower() for term in ('grille', 'salaire', 'salary', 'salaries', 'wage', 'remuneration'))
         if not terms:
-            return semantic_points[:limit]
+            selected=semantic_points[:limit]
+            logging.info('rag timing embedding_ms=%d qdrant_ms=%d rerank_ms=0 candidates=%d returned=%d',int(embedding_seconds*1000),int(qdrant_seconds*1000),len(semantic_points),len(selected))
+            return selected
+        rerank_started=time.perf_counter()
         ranked=[]
         priority=[]
         for point in semantic_points:
@@ -80,4 +110,5 @@ class RAGService:
             if point_id not in seen:
                 seen.add(point_id); merged.append(point)
             if len(merged)>=limit: break
+        logging.info('rag timing embedding_ms=%d qdrant_ms=%d rerank_ms=%d candidates=%d returned=%d',int(embedding_seconds*1000),int(qdrant_seconds*1000),int((time.perf_counter()-rerank_started)*1000),len(semantic_points),len(merged))
         return merged

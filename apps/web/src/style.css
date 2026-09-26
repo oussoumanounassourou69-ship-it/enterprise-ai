@@ -22,6 +22,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
 }
 
 button,
@@ -36,6 +38,7 @@ button {
 .app-shell {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   background: #f8fafc;
 }
@@ -48,6 +51,7 @@ button {
   width: 275px;
   min-width: 275px;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: #ffffff;
@@ -292,10 +296,13 @@ button {
 ========================= */
 
 .main {
+  position: relative;
   min-width: 0;
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background:
     radial-gradient(
       circle at 50% 20%,
@@ -492,7 +499,7 @@ button {
 .messages {
   width: min(900px, calc(100% - 40px));
   margin: 0 auto;
-  padding: 30px 0 150px;
+  padding: 30px 0 24px;
 }
 
 .message-row {
@@ -506,6 +513,7 @@ button {
 }
 
 .message-content {
+  min-width: 0;
   max-width: min(720px, 80%);
 }
 
@@ -523,6 +531,8 @@ button {
 }
 
 .message-bubble {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 13px 16px;
   border: 1px solid #e6eaf0;
   border-radius: 15px;
@@ -711,10 +721,10 @@ button {
 ========================= */
 
 .composer-area {
-  position: absolute;
-  left: 275px;
-  right: 0;
-  bottom: 0;
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  width: 100%;
   padding: 15px 20px 18px;
   background: linear-gradient(
     to top,
@@ -878,7 +888,8 @@ button {
   }
 
   .composer-area {
-    left: 0;
+    padding-right: 16px;
+    padding-left: 16px;
   }
 
   .suggestions {
@@ -929,7 +940,7 @@ button {
   }
 
   .composer-area {
-    padding: 10px 10px 13px;
+    padding: 10px 10px calc(13px + env(safe-area-inset-bottom));
   }
 
   .composer {
